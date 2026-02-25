@@ -614,20 +614,26 @@
         dc.bufferedAmountLowThreshold = 1 * 1024 * 1024; // 1MB
 
         function sendChunk(buffer) {
-          const payload = {
-            type: "chunk",
-            transferId,
-            chunk: buffer
-          };
-
-          const json = JSON.stringify({
+          const header = {
             type: "chunk",
             transferId
-          });
+          };
 
-          // Send header first
-          dc.send(json);
-          dc.send(buffer);
+          const headerStr = JSON.stringify(header);
+          const headerBytes = new TextEncoder().encode(headerStr);
+
+          const combined = new Uint8Array(4 + headerBytes.length + buffer.byteLength);
+
+          // First 4 bytes = header length
+          new DataView(combined.buffer).setUint32(0, headerBytes.length);
+
+          // Then header
+          combined.set(headerBytes, 4);
+
+          // Then file data
+          combined.set(new Uint8Array(buffer), 4 + headerBytes.length);
+
+          dc.send(combined.buffer);
         }
 
         reader.onload = (e) => {
