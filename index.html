@@ -4,6 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <title>P2P File Share</title>
   <style>
     * {
@@ -254,6 +255,9 @@
   </div>
 
   <script>
+    let incomingZip = null;
+    let incomingFileCount = 0;
+    let completedFileCount = 0;
     const CHUNK_SIZE = 16384; // 16KB chunks
     let ws = null;
     let myId = null;
@@ -665,6 +669,7 @@
           const msg = JSON.parse(data);
 
           if (msg.type === 'metadata') {
+            incomingFileCount++;
             activeTransfers.set(msg.transferId, {
               name: msg.name,
               size: msg.size,
@@ -677,14 +682,38 @@
             const transfer = activeTransfers.get(msg.transferId);
             if (transfer) {
               const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = transfer.name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              setTimeout(() => URL.revokeObjectURL(url), 100);
+
+              if (!incomingZip) {
+                incomingZip = new JSZip();
+              }
+
+              incomingZip.file(transfer.name, blob);
+              completedFileCount++;
+
+              completeTransfer(msg.transferId, true);
+              activeTransfers.delete(msg.transferId);
+
+              // Small delay to allow multiple files to complete
+              setTimeout(async () => {
+                if (completedFileCount === incomingFileCount) {
+                  const zipBlob = await incomingZip.generateAsync({ type: "blob" });
+
+                  const url = URL.createObjectURL(zipBlob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `Airdrop_${new Date().toISOString().slice(0, 10)}.zip`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+
+                  URL.revokeObjectURL(url);
+
+                  // Reset for next batch
+                  incomingZip = null;
+                  completedFileCount = 0;
+                  incomingFileCount = 0;
+                }
+              }, 500);
 
               completeTransfer(msg.transferId, true);
               activeTransfers.delete(msg.transferId);
