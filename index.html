@@ -256,8 +256,6 @@
 
   <script>
     let incomingZip = null;
-    let incomingFileCount = 0;
-    let completedFileCount = 0;
     const CHUNK_SIZE = 16384; // 16KB chunks
     let ws = null;
     let myId = null;
@@ -669,7 +667,6 @@
           const msg = JSON.parse(data);
 
           if (msg.type === 'metadata') {
-            incomingFileCount++;
             activeTransfers.set(msg.transferId, {
               name: msg.name,
               size: msg.size,
@@ -680,6 +677,7 @@
             createTransferUI(msg.transferId, msg.name, msg.size, 'receiving');
           } else if (msg.type === 'done') {
             const transfer = activeTransfers.get(msg.transferId);
+
             if (transfer) {
               const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
 
@@ -688,14 +686,15 @@
               }
 
               incomingZip.file(transfer.name, blob);
-              completedFileCount++;
 
               completeTransfer(msg.transferId, true);
               activeTransfers.delete(msg.transferId);
 
-              // Small delay to allow multiple files to complete
-              setTimeout(async () => {
-                if (completedFileCount === incomingFileCount) {
+              // 🔥 Only zip when ALL transfers are finished
+              if (activeTransfers.size === 0) {
+                setTimeout(async () => {
+                  if (!incomingZip) return;
+
                   const zipBlob = await incomingZip.generateAsync({ type: "blob" });
 
                   const url = URL.createObjectURL(zipBlob);
@@ -708,15 +707,9 @@
 
                   URL.revokeObjectURL(url);
 
-                  // Reset for next batch
-                  incomingZip = null;
-                  completedFileCount = 0;
-                  incomingFileCount = 0;
-                }
-              }, 500);
-
-              completeTransfer(msg.transferId, true);
-              activeTransfers.delete(msg.transferId);
+                  incomingZip = null; // reset
+                }, 300);
+              }
             }
           }
         } else if (data instanceof ArrayBuffer) {
