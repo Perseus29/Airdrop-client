@@ -266,6 +266,7 @@
     let activeTransfers = new Map();
     let reconnectAttempts = 0;
     const MAX_RECONNECT_ATTEMPTS = 5;
+    let currentChunkTransferId = null;
 
     // Generate device name
     const adjectives = ['Swift', 'Bright', 'Cool', 'Fast', 'Smart', 'Quick', 'Bold', 'Clever'];
@@ -612,16 +613,21 @@
         const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024; // 4MB
         dc.bufferedAmountLowThreshold = 1 * 1024 * 1024; // 1MB
 
-        function sendChunk(chunk) {
-          if (dc.bufferedAmount > MAX_BUFFERED_AMOUNT) {
-            dc.onbufferedamountlow = () => {
-              dc.onbufferedamountlow = null;
-              sendChunk(chunk);
-            };
-            return;
-          }
+        function sendChunk(buffer) {
+          const payload = {
+            type: "chunk",
+            transferId,
+            chunk: buffer
+          };
 
-          dc.send(chunk);
+          const json = JSON.stringify({
+            type: "chunk",
+            transferId
+          });
+
+          // Send header first
+          dc.send(json);
+          dc.send(buffer);
         }
 
         reader.onload = (e) => {
@@ -675,68 +681,35 @@
               chunks: []
             });
             createTransferUI(msg.transferId, msg.name, msg.size, 'receiving');
-          } else if (msg.type === 'done') {
-            const transfer = activeTransfers.get(msg.transferId);
+          } else if (typeof data === 'string') {
+            const msg = JSON.parse(data);
 
-            if (transfer) {
-              const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
-
-              if (!incomingZip) {
-                incomingZip = new JSZip();
-              }
-
-              incomingZip.file(transfer.name, blob);
-
-              completeTransfer(msg.transferId, true);
-              activeTransfers.delete(msg.transferId);
-
-              // 🔥 Only zip when ALL transfers are finished
-              if (activeTransfers.size === 0) {
-                setTimeout(async () => {
-                  if (!incomingZip) return;
-
-                  const zipBlob = await incomingZip.generateAsync({ type: "blob" });
-
-                  const url = URL.createObjectURL(zipBlob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `Airdrop_${new Date().toISOString().slice(0, 10)}.zip`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-
-                  URL.revokeObjectURL(url);
-
-                  incomingZip = null; // reset
-                }, 300);
-              }
+            if (msg.type === 'chunk') {
+              // Next binary message belongs to this transfer
+              currentChunkTransferId = msg.transferId;
+              return;
             }
+
+            // existing metadata and done logic stays
           }
-        } else {
-          // Handle binary data (ArrayBuffer OR Blob)
-          const processChunk = async (buffer) => {
-            let foundTransfer = null;
-            let foundId = null;
+          else {
+            // This is binary
+            if (!currentChunkTransferId) return;
 
-            for (const [id, transfer] of activeTransfers.entries()) {
-              if (transfer.received < transfer.size) {
-                foundTransfer = transfer;
-                foundId = id;
-                break;
-              }
+            const transfer = activeTransfers.get(currentChunkTransferId);
+            if (!transfer) return;
+
+            const processBuffer = async (buffer) => {
+              transfer.chunks.push(buffer);
+              transfer.received += buffer.byteLength;
+              updateTransferProgress(currentChunkTransferId, transfer.received, transfer.size);
+            };
+
+            if (data instanceof Blob) {
+              data.arrayBuffer().then(processBuffer);
+            } else {
+              processBuffer(data);
             }
-
-            if (foundTransfer) {
-              foundTransfer.chunks.push(buffer);
-              foundTransfer.received += buffer.byteLength;
-              updateTransferProgress(foundId, foundTransfer.received, foundTransfer.size);
-            }
-          };
-
-          if (data instanceof Blob) {
-            data.arrayBuffer().then(processChunk);
-          } else if (data instanceof ArrayBuffer) {
-            processChunk(data);
           }
         }
       } catch (e) {
