@@ -697,7 +697,25 @@
 
             const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
 
-            // ---- ZIP LOGIC ----
+            // 🔥 If file is larger than 200MB → download immediately
+            if (transfer.size > 200 * 1024 * 1024) {
+
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = transfer.name;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+
+              URL.revokeObjectURL(url);
+
+              completeTransfer(msg.transferId, true);
+              activeTransfers.delete(msg.transferId);
+              return;
+            }
+
+            // ✅ Otherwise → add to ZIP
             if (!incomingZip) {
               incomingZip = new JSZip();
             }
@@ -707,7 +725,7 @@
             completeTransfer(msg.transferId, true);
             activeTransfers.delete(msg.transferId);
 
-            // When ALL transfers finished → create zip
+            // If all small files finished → generate zip
             if (activeTransfers.size === 0) {
               setTimeout(async () => {
                 if (!incomingZip) return;
