@@ -388,7 +388,7 @@
           </div>
           <div class="file-input-wrapper">
             <button onclick="document.getElementById('file-${peer.id}').click()">Send File</button>
-            <input type="file" id="file-${peer.id}">
+            <input type="file" id="file-${peer.id}" multiple>
           </div>
         `;
 
@@ -517,18 +517,19 @@
 
     async function selectFile(peerId) {
       const fileInput = document.getElementById(`file-${peerId}`);
-      const file = fileInput.files[0];
+      const files = Array.from(fileInput.files);
 
-      if (!file) return;
+      if (files.length === 0) return;
 
-      console.log('File selected:', file.name, file.size);
+      console.log('Files selected:', files.length);
 
       // Reset input
       fileInput.value = '';
 
       try {
-        // Create connection if doesn't exist
+        // Ensure connection exists
         let dc = dataChannels.get(peerId);
+
         if (!dc || dc.readyState !== 'open') {
           updatePeerStatus(peerId, 'Connecting...');
 
@@ -560,11 +561,23 @@
           await Promise.race([connectionReady, timeout]);
         }
 
-        sendFile(peerId, file);
+        // 🔥 Send files one by one (safe & stable)
+        for (const file of files) {
+          console.log('Sending:', file.name);
+          await new Promise((resolve, reject) => {
+            try {
+              sendFile(peerId, file);
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          });
+        }
+
       } catch (e) {
-        console.error('Error sending file:', e);
+        console.error('Error sending files:', e);
         updatePeerStatus(peerId, 'Failed');
-        alert('Failed to send file: ' + e.message);
+        alert('Failed to send files: ' + e.message);
       }
     }
 
