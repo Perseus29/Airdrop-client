@@ -712,23 +712,31 @@
               }
             }
           }
-        } else if (data instanceof ArrayBuffer) {
-          // Find the active transfer that's still receiving
-          let foundTransfer = null;
-          let foundId = null;
+        } else {
+          // Handle binary data (ArrayBuffer OR Blob)
+          const processChunk = async (buffer) => {
+            let foundTransfer = null;
+            let foundId = null;
 
-          for (const [id, transfer] of activeTransfers.entries()) {
-            if (transfer.received < transfer.size) {
-              foundTransfer = transfer;
-              foundId = id;
-              break;
+            for (const [id, transfer] of activeTransfers.entries()) {
+              if (transfer.received < transfer.size) {
+                foundTransfer = transfer;
+                foundId = id;
+                break;
+              }
             }
-          }
 
-          if (foundTransfer) {
-            foundTransfer.chunks.push(data);
-            foundTransfer.received += data.byteLength;
-            updateTransferProgress(foundId, foundTransfer.received, foundTransfer.size);
+            if (foundTransfer) {
+              foundTransfer.chunks.push(buffer);
+              foundTransfer.received += buffer.byteLength;
+              updateTransferProgress(foundId, foundTransfer.received, foundTransfer.size);
+            }
+          };
+
+          if (data instanceof Blob) {
+            data.arrayBuffer().then(processChunk);
+          } else if (data instanceof ArrayBuffer) {
+            processChunk(data);
           }
         }
       } catch (e) {
