@@ -674,7 +674,8 @@
 
     function handleIncomingData(peerId, data) {
       try {
-        // Check if it's a control message (string) or file data (ArrayBuffer)
+
+        // ✅ STRING CONTROL MESSAGES (metadata + done)
         if (typeof data === 'string') {
           const msg = JSON.parse(data);
 
@@ -686,38 +687,80 @@
               received: 0,
               chunks: []
             });
+
             createTransferUI(msg.transferId, msg.name, msg.size, 'receiving');
-          } else if (typeof data === 'string') {
-            const msg = JSON.parse(data);
-
-            if (msg.type === 'chunk') {
-              // Next binary message belongs to this transfer
-              currentChunkTransferId = msg.transferId;
-              return;
-            }
-
-            // existing metadata and done logic stays
           }
-          else {
-            // This is binary
-            if (!currentChunkTransferId) return;
 
-            const transfer = activeTransfers.get(currentChunkTransferId);
+          else if (msg.type === 'done') {
+            const transfer = activeTransfers.get(msg.transferId);
             if (!transfer) return;
 
-            const processBuffer = async (buffer) => {
-              transfer.chunks.push(buffer);
-              transfer.received += buffer.byteLength;
-              updateTransferProgress(currentChunkTransferId, transfer.received, transfer.size);
-            };
+            const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
 
-            if (data instanceof Blob) {
-              data.arrayBuffer().then(processBuffer);
-            } else {
-              processBuffer(data);
+            // ---- ZIP LOGIC ----
+            if (!incomingZip) {
+              incomingZip = new JSZip();
+            }
+
+            incomingZip.file(transfer.name, blob);
+
+            completeTransfer(msg.transferId, true);
+            activeTransfers.delete(msg.transferId);
+
+            // When ALL transfers finished → create zip
+            if (activeTransfers.size === 0) {
+              setTimeout(async () => {
+                if (!incomingZip) return;
+
+                const zipBlob = await incomingZip.generateAsync({ type: "blob" });
+
+                const url = URL.createObjectURL(zipBlob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `Airdrop_${new Date().toISOString().slice(0, 10)}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                URL.revokeObjectURL(url);
+                incomingZip = null;
+              }, 300);
             }
           }
+
+          return;
         }
+
+        // ✅ BINARY CHUNKS (structured packet)
+        if (data instanceof ArrayBuffer || data instanceof Blob) {
+
+          const processBuffer = (buffer) => {
+
+            const view = new DataView(buffer);
+            const headerLength = view.getUint32(0);
+
+            const headerBytes = new Uint8Array(buffer, 4, headerLength);
+            const headerStr = new TextDecoder().decode(headerBytes);
+            const header = JSON.parse(headerStr);
+
+            const fileData = buffer.slice(4 + headerLength);
+
+            const transfer = activeTransfers.get(header.transferId);
+            if (!transfer) return;
+
+            transfer.chunks.push(fileData);
+            transfer.received += fileData.byteLength;
+
+            updateTransferProgress(header.transferId, transfer.received, transfer.size);
+          };
+
+          if (data instanceof Blob) {
+            data.arrayBuffer().then(processBuffer);
+          } else {
+            processBuffer(data);
+          }
+        }
+
       } catch (e) {
         console.error('Error handling incoming data:', e);
       }
