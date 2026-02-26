@@ -4,7 +4,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <title>P2P File Share</title>
   <style>
     * {
@@ -255,7 +254,6 @@
   </div>
 
   <script>
-    let incomingZip = null;
     const CHUNK_SIZE = 16384; // 16KB chunks
     let ws = null;
     let myId = null;
@@ -266,7 +264,6 @@
     let activeTransfers = new Map();
     let reconnectAttempts = 0;
     const MAX_RECONNECT_ATTEMPTS = 5;
-    let currentChunkTransferId = null;
 
     // Generate device name
     const adjectives = ['Swift', 'Bright', 'Cool', 'Fast', 'Smart', 'Quick', 'Bold', 'Clever'];
@@ -613,27 +610,16 @@
         const MAX_BUFFERED_AMOUNT = 4 * 1024 * 1024; // 4MB
         dc.bufferedAmountLowThreshold = 1 * 1024 * 1024; // 1MB
 
-        function sendChunk(buffer) {
-          const header = {
-            type: "chunk",
-            transferId
-          };
+        function sendChunk(chunk) {
+          if (dc.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+            dc.onbufferedamountlow = () => {
+              dc.onbufferedamountlow = null;
+              sendChunk(chunk);
+            };
+            return;
+          }
 
-          const headerStr = JSON.stringify(header);
-          const headerBytes = new TextEncoder().encode(headerStr);
-
-          const combined = new Uint8Array(4 + headerBytes.length + buffer.byteLength);
-
-          // First 4 bytes = header length
-          new DataView(combined.buffer).setUint32(0, headerBytes.length);
-
-          // Then header
-          combined.set(headerBytes, 4);
-
-          // Then file data
-          combined.set(new Uint8Array(buffer), 4 + headerBytes.length);
-
-          dc.send(combined.buffer);
+          dc.send(chunk);
         }
 
         reader.onload = (e) => {
@@ -674,8 +660,7 @@
 
     function handleIncomingData(peerId, data) {
       try {
-
-        // ✅ STRING CONTROL MESSAGES (metadata + done)
+        // Check if it's a control message (string) or file data (ArrayBuffer)
         if (typeof data === 'string') {
           const msg = JSON.parse(data);
 
@@ -687,98 +672,43 @@
               received: 0,
               chunks: []
             });
-
             createTransferUI(msg.transferId, msg.name, msg.size, 'receiving');
-          }
-
-          else if (msg.type === 'done') {
+          } else if (msg.type === 'done') {
             const transfer = activeTransfers.get(msg.transferId);
-            if (!transfer) return;
-
-            const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
-
-            // 🔥 If file is larger than 200MB → download immediately
-            if (transfer.size > 200 * 1024 * 1024) {
-
+            if (transfer) {
+              const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
               const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
+              const a = document.createElement('a');
               a.href = url;
               a.download = transfer.name;
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);
-
-              URL.revokeObjectURL(url);
+              setTimeout(() => URL.revokeObjectURL(url), 100);
 
               completeTransfer(msg.transferId, true);
               activeTransfers.delete(msg.transferId);
-              return;
             }
+          }
+        } else if (data instanceof ArrayBuffer) {
+          // Find the active transfer that's still receiving
+          let foundTransfer = null;
+          let foundId = null;
 
-            // ✅ Otherwise → add to ZIP
-            if (!incomingZip) {
-              incomingZip = new JSZip();
-            }
-
-            incomingZip.file(transfer.name, blob);
-
-            completeTransfer(msg.transferId, true);
-            activeTransfers.delete(msg.transferId);
-
-            // If all small files finished → generate zip
-            if (activeTransfers.size === 0) {
-              setTimeout(async () => {
-                if (!incomingZip) return;
-
-                const zipBlob = await incomingZip.generateAsync({ type: "blob" });
-
-                const url = URL.createObjectURL(zipBlob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `Airdrop_${new Date().toISOString().slice(0, 10)}.zip`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                URL.revokeObjectURL(url);
-                incomingZip = null;
-              }, 300);
+          for (const [id, transfer] of activeTransfers.entries()) {
+            if (transfer.received < transfer.size) {
+              foundTransfer = transfer;
+              foundId = id;
+              break;
             }
           }
 
-          return;
-        }
-
-        // ✅ BINARY CHUNKS (structured packet)
-        if (data instanceof ArrayBuffer || data instanceof Blob) {
-
-          const processBuffer = (buffer) => {
-
-            const view = new DataView(buffer);
-            const headerLength = view.getUint32(0);
-
-            const headerBytes = new Uint8Array(buffer, 4, headerLength);
-            const headerStr = new TextDecoder().decode(headerBytes);
-            const header = JSON.parse(headerStr);
-
-            const fileData = buffer.slice(4 + headerLength);
-
-            const transfer = activeTransfers.get(header.transferId);
-            if (!transfer) return;
-
-            transfer.chunks.push(fileData);
-            transfer.received += fileData.byteLength;
-
-            updateTransferProgress(header.transferId, transfer.received, transfer.size);
-          };
-
-          if (data instanceof Blob) {
-            data.arrayBuffer().then(processBuffer);
-          } else {
-            processBuffer(data);
+          if (foundTransfer) {
+            foundTransfer.chunks.push(data);
+            foundTransfer.received += data.byteLength;
+            updateTransferProgress(foundId, foundTransfer.received, foundTransfer.size);
           }
         }
-
       } catch (e) {
         console.error('Error handling incoming data:', e);
       }
